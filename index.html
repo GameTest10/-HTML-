@@ -1,0 +1,453 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FORTNITE 2D - DESTRUCTION</title>
+    <style>
+        body { text-align: center; font-family: sans-serif; background: #0c0d14; color: #fff; margin: 0; padding: 5px; overflow: hidden; user-select: none; }
+        .hud { display: flex; justify-content: center; gap: 25px; font-size: 18px; font-weight: bold; margin: 5px 0; color: #00ffcc; text-shadow: 0 0 5px rgba(0,255,204,0.5); }
+        .mats { color: #ffa500; }
+        .enemy-hud { color: #ff3366; }
+        #canvas-container { position: relative; display: inline-block; }
+        canvas { background: #141622; border: 3px solid #00ffcc; border-radius: 8px; }
+        .controls { margin-top: 5px; font-size: 13px; color: #aaa; font-weight: bold; line-height: 1.4; }
+        .selected { color: #ff00ff; text-shadow: 0 0 5px #ff00ff; }
+        
+        .menu-screen { position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: flex; flex-direction: column; justify-content: center; align-items: center; background: rgba(12, 13, 20, 0.93); z-index: 10; border-radius: 8px; }
+        .menu-title { font-size: 26px; color: #00ffcc; margin-bottom: 5px; font-weight: bold; }
+        .menu-sub { font-size: 14px; color: #888; margin-bottom: 25px; }
+        .btn-group { display: flex; gap: 12px; flex-wrap: wrap; justify-content: center; max-width: 520px; }
+        .lvl-btn { padding: 12px 22px; font-size: 15px; font-weight: bold; background: #222533; color: #fff; border: 2px solid #00ffcc; border-radius: 5px; cursor: pointer; transition: 0.2s; text-align: left; width: 240px; }
+        .lvl-btn:hover { background: #00ffcc; color: #000; box-shadow: 0 0 10px #00ffcc; }
+        .lvl6-btn { border-color: #ff0055; color: #ff3366; display: none; width: 492px; text-align: center; }
+        .lvl6-btn:hover { background: #ff0055; color: #fff; box-shadow: 0 0 15px #ff0055; }
+    </style>
+</head>
+<body>
+
+    <div class="hud">
+        <div>YOUR HP: <span id="hp">100</span></div>
+        <div class="mats">🪵資材: <span>∞</span></div>
+        <div class="enemy-hud">ENEMY(LV<span id="current-lv">1</span>) HP: <span id="enemy-hp">100</span></div>
+        <div style="color: #ffff00;">LV5撃破数: <span id="lv5-wins">0</span>/3</div>
+    </div>
+    
+    <div id="canvas-container">
+        <canvas id="gameCanvas" width="800" height="550"></canvas>
+        
+        <!-- レベル選択画面 -->
+        <div id="level-menu" class="menu-screen">
+            <div class="menu-title">⚔️ 建築破壊タイマンバトル ⚔️</div>
+            <div class="menu-sub">※【新機能】プレイヤーの弾でも敵の建築を撃ち壊せるようになりました！</div>
+            <div class="btn-group">
+                <button class="lvl-btn" onclick="selectLevel(1)">▶ LV 1 : HP 150 (基本床)</button>
+                <button class="lvl-btn" onclick="selectLevel(2)">▶ LV 2 : HP 250 (V字階段)</button>
+                <button class="lvl-btn" onclick="selectLevel(3)">▶ LV 3 : HP 350 (中央縦壁)</button>
+                <button class="lvl-btn" onclick="selectLevel(4)">▶ LV 4 : HP 450 (先行高台)</button>
+                <button class="lvl-btn" onclick="selectLevel(5)" style="border-color: #ffaa00; color: #ffaa00; width: 492px; text-align: center;">🔥 LV 5 : HP 500 (空中格子迷宮)</button>
+                <button id="lvl6-choice" class="lvl-btn lvl6-btn" onclick="selectLevel(6)">⚠️ LV 6 : HP 1000 (異次元大魔王)</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="controls">
+        移動：【← / →】または【A / D】 ｜ ジャンプ：【↑】または【W】（2段ジャンプ可）<br>
+        **攻撃：【スペースキー】銃を撃つ（建築物も破壊可能！）** ｜ 即時建築：【N】壁 ｜ 【V】床 ｜ 【B】階段
+    </div>
+
+<script>
+    const canvas = document.getElementById("gameCanvas");
+    const ctx = canvas.getContext("2d");
+
+    const MAP_HEIGHT = 1500;
+    let cameraY = MAP_HEIGHT - canvas.height; 
+
+    let currentBuildType = 0; 
+    let gameActive = false; 
+    let cpuLevel = 1;
+    let lv5WinStreak = 0; 
+    let lv6Unlocked = false;
+
+    const player = {
+        x: 340, y: 1350, w: 20, h: 20, vx: 0, vy: 0,
+        speed: 0.6, maxSpeedX: 5, gravity: 0.4, friction: 0.85,
+        onGround: false, canDoubleJump: true, hp: 100, angle: 0
+    };
+
+    const enemy = {
+        x: 440, y: 1350, w: 20, h: 20, vx: 0, vy: 0,
+        speed: 0.4, maxSpeedX: 4, gravity: 0.4, friction: 0.85,
+        onGround: false, canDoubleJump: true, hp: 100, maxHp: 100, angle: 0,
+        shootCooldown: 60, buildCooldown: 30
+    };
+
+    const cpuSettings = {
+        1: { speed: 0.24, maxSpeedX: 2.8, shootRate: 110, buildRate: 0.01, maxHp: 150 },
+        2: { speed: 0.35, maxSpeedX: 3.8, shootRate: 85,  buildRate: 0.04, maxHp: 250 },
+        3: { speed: 0.45, maxSpeedX: 4.5, shootRate: 70,  buildRate: 0.07, maxHp: 350 },
+        4: { speed: 0.55, maxSpeedX: 5.2, shootRate: 55,  buildRate: 0.10, maxHp: 450 },
+        5: { speed: 0.68, maxSpeedX: 6.2, shootRate: 40,  buildRate: 0.15, maxHp: 500 }, 
+        6: { speed: 0.98, maxSpeedX: 8.8, shootRate: 22,  buildRate: 0.32, maxHp: 1000 }  
+    };
+
+    let bullets = [];      
+    let enemyBullets = []; 
+    let walls = [];        
+    let particles = []; 
+
+    let mouseX = 0; let mouseY = 0;
+    let keys = { a: false, d: false, w: false, v: false, b: false, n: false };
+
+    function initStageByLevel(lvl) {
+        walls = [];
+        for(let x=0; x<canvas.width; x+=40) {
+            walls.push({ x: x, y: 1460, w: 40, h: 40, hp: 9999, maxHp: 9999, type: 2 });
+        }
+
+        if (lvl === 1) {
+            walls.push({ x: 320, y: 1400, w: 160, h: 40, hp: 100, maxHp: 100, type: 2 });
+            player.x = 340; enemy.x = 440; player.y = 1350; enemy.y = 1350;
+        } 
+        else if (lvl === 2) {
+            walls.push({ x: 360, y: 1400, w: 40, h: 40, hp: 100, maxHp: 100, type: 2 });
+            walls.push({ x: 400, y: 1400, w: 40, h: 40, hp: 100, maxHp: 100, type: 2 });
+            walls.push({ x: 320, y: 1360, w: 40, h: 40, hp: 100, maxHp: 100, type: 3 }); 
+            walls.push({ x: 440, y: 1360, w: 40, h: 40, hp: 100, maxHp: 100, type: 3 }); 
+            player.x = 340; enemy.x = 440; player.y = 1350; enemy.y = 1350;
+        } 
+        else if (lvl === 3) {
+            walls.push({ x: 200, y: 1400, w: 400, h: 40, hp: 120, maxHp: 120, type: 2 });
+            for(let h=0; h<6; h++) {
+                walls.push({ x: 380, y: 1360 - (h*40), w: 40, h: 40, hp: 150, maxHp: 150, type: 1 }); 
+            }
+            player.x = 280; enemy.x = 500; player.y = 1350; enemy.y = 1350;
+        } 
+        else if (lvl === 4) {
+            walls.push({ x: 200, y: 1400, w: 400, h: 40, hp: 100, maxHp: 100, type: 2 });
+            walls.push({ x: 440, y: 1280, w: 120, h: 40, hp: 120, maxHp: 120, type: 2 });
+            walls.push({ x: 400, y: 1320, w: 40, h: 40, hp: 120, maxHp: 120, type: 3 }); 
+            player.x = 260; enemy.x = 480; player.y = 1350; enemy.y = 1220; 
+        } 
+        else {
+            walls.push({ x: 0, y: 1400, w: 800, h: 40, hp: 100, maxHp: 100, type: 2 });
+            for(let yLevel = 1200; yLevel >= 600; yLevel -= 160) {
+                for(let xPosition = 80; xPosition < 800; xPosition += 200) {
+                    walls.push({ x: xPosition, y: yLevel, w: 80, h: 20, hp: 100, maxHp: 100, type: 2 });
+                }
+            }
+            player.x = 100; enemy.x = 700; player.y = 1350; enemy.y = 1350;
+        }
+    }
+
+    function selectLevel(lvl) {
+        cpuLevel = lvl;
+        document.getElementById("current-lv").innerText = lvl;
+        document.getElementById("level-menu").style.display = "none";
+        
+        const cfg = cpuSettings[lvl];
+        enemy.speed = cfg.speed;
+        enemy.maxSpeedX = cfg.maxSpeedX;
+        enemy.maxHp = cfg.maxHp;
+        enemy.hp = cfg.maxHp;
+
+        initStageByLevel(lvl);
+        
+        player.hp = 100;
+        player.vx = 0; player.vy = 0;
+        enemy.vx = 0; enemy.vy = 0;
+        bullets = []; enemyBullets = []; particles = [];
+        
+        updateUI();
+        gameActive = true;
+    }
+
+    window.addEventListener("keydown", e => {
+        if (!e || !e.key) return;
+        const k = e.key.toLowerCase();
+        
+        if (!gameActive && (player.hp <= 0 || enemy.hp <= 0)) {
+            if (e.key === " ") {
+                document.getElementById("level-menu").style.display = "flex";
+                updateUI();
+                return;
+            }
+        }
+
+        if (!gameActive) return;
+
+        if (k === 'a' || e.key === "ArrowLeft") keys.a = true;
+        if (k === 'd' || e.key === "ArrowRight") keys.d = true;
+
+        if (e.key === "ArrowUp" || k === 'w') {
+            if (!e.repeat) handleJump(player);
+        }
+        
+        if (k === 'n') tryBuildAtPlayer(1); 
+        if (k === 'v') tryBuildAtPlayer(2); 
+        if (k === 'b') tryBuildAtPlayer(3); 
+
+        if (e.key === " ") shootWeapon();
+    });
+
+    window.addEventListener("keyup", e => {
+        if (!e || !e.key) return;
+        const k = e.key.toLowerCase();
+        if (k === 'a' || e.key === "ArrowLeft") keys.a = false;
+        if (k === 'd' || e.key === "ArrowRight") keys.d = false;
+    });
+
+    canvas.addEventListener("mousemove", e => {
+        if (!gameActive) return;
+        const rect = canvas.getBoundingClientRect();
+        mouseX = e.clientX - rect.left;
+        mouseY = e.clientY - rect.top + cameraY; 
+    });
+
+    function tryBuildAtPlayer(buildType) {
+        if (player.hp <= 0 || !gameActive) return;
+        const offsetX = Math.cos(player.angle) * 35;
+        const offsetY = Math.sin(player.angle) * 35;
+        const targetX = player.x + player.w / 2 + offsetX;
+        const targetY = player.y + player.h / 2 + offsetY;
+        const gridX = Math.floor(targetX / 40) * 40;
+        const gridY = Math.floor(targetY / 40) * 40;
+
+        const exist = walls.find(w => w.x === gridX && w.y === gridY);
+        if (!exist) {
+            walls.push({ x: gridX, y: gridY, w: 40, h: 40, hp: 80, maxHp: 80, type: buildType });
+            updateUI();
+        }
+    }
+
+    function handleJump(char) {
+        if (char.onGround) {
+            char.vy = -8.5; char.onGround = false;
+        } else if (char.canDoubleJump) {
+            char.vy = -7.5; char.canDoubleJump = false; 
+        }
+    }
+
+    function shootWeapon() {
+        if (player.hp <= 0 || !gameActive) return;
+        const pCenterX = player.x + player.w / 2;
+        const pCenterY = player.y + player.h / 2;
+        const eCenterX = enemy.x + enemy.w / 2;
+        const eCenterY = enemy.y + enemy.h / 2;
+
+        player.angle = Math.atan2(eCenterY - pCenterY, eCenterX - pCenterX);
+        const muzzleX = pCenterX + Math.cos(player.angle) * 24;
+        const muzzleY = pCenterY + Math.sin(player.angle) * 24;
+
+        for(let i = -1; i <= 1; i++) {
+            const spread = i * 0.12;
+            bullets.push({
+                x: pCenterX, y: pCenterY,
+                vx: Math.cos(player.angle + spread) * 10, vy: Math.sin(player.angle + spread) * 10
+            });
+        }
+
+        for (let i = 0; i < 15; i++) {
+            const pAngle = player.angle + (Math.random() - 0.5) * 1.2;
+            const pSpeed = Math.random() * 4 + 2;
+            particles.push({
+                x: muzzleX, y: muzzleY,
+                vx: Math.cos(pAngle) * pSpeed, vy: Math.sin(pAngle) * pSpeed,
+                radius: Math.random() * 3 + 2, alpha: 1,
+                color: Math.random() < 0.6 ? "#ffff00" : "#ff6600"
+            });
+        }
+    }
+
+    function updateUI() {
+        document.getElementById("hp").innerText = Math.max(0, player.hp);
+        document.getElementById("enemy-hp").innerText = Math.max(0, enemy.hp);
+        document.getElementById("lv5-wins").innerText = lv5WinStreak;
+        
+        if (lv5WinStreak >= 3 && !lv6Unlocked) {
+            lv6Unlocked = true;
+            const btn = document.getElementById("lvl6-choice");
+            if(btn) btn.style.display = "block";
+        }
+    }
+
+    function updateCharacter(char, mx) {
+        char.vx += mx; char.vx *= char.friction; char.vy += char.gravity;
+        if (Math.abs(char.vx) > char.maxSpeedX) char.vx = Math.sign(char.vx) * char.maxSpeedX;
+        if (char.vy > char.maxSpeedY) char.vy = char.maxSpeedY;
+        char.x += char.vx; char.y += char.vy;
+
+        if (char.x < 0) { char.x = 0; char.vx = 0; }
+        if (char.x > canvas.width - char.w) { char.x = canvas.width - char.w; char.vx = 0; }
+
+        let grounded = false;
+        walls.forEach(w => {
+            if (char.x + char.w > w.x && char.x < w.x + w.w && char.y + char.h > w.y && char.y < w.y + w.h) {
+                let overlapX = Math.min(char.x + char.w - w.x, w.x + w.w - char.x);
+                let overlapY = Math.min(char.y + char.h - w.y, w.y + w.h - char.y);
+                if (overlapX < overlapY) {
+                    char.x += (char.x + char.w/2 < w.x + w.w/2) ? -overlapX : overlapX; char.vx = 0;
+                } else {
+                    if (char.y + char.h/2 < w.y + w.h/2) {
+                        char.y -= overlapY; char.vy = 0; grounded = true; char.canDoubleJump = true;
+                    } else { char.y += overlapY; char.vy = 1; }
+                }
+            }
+        });
+        char.onGround = grounded;
+    }
+
+    function update() {
+        if (!gameActive) return;
+        
+        if (player.hp <= 0 || enemy.hp <= 0) {
+            gameActive = false;
+            if (enemy.hp <= 0 && cpuLevel === 5) {
+                lv5WinStreak++; 
+            }
+            updateUI();
+            return;
+        }
+
+        stageTimer++;
+
+        let pmx = 0;
+        if (keys.a) pmx -= player.speed;
+        if (keys.d) pmx += player.speed;
+        updateCharacter(player, pmx);
+
+        player.angle = Math.atan2((enemy.y + enemy.h/2) - (player.y + player.h/2), (enemy.x + enemy.w/2) - (player.x + player.w/2));
+
+        particles.forEach((p, index) => {
+            p.x += p.vx; p.y += p.vy; p.alpha -= 0.04;
+            if (p.alpha <= 0) particles.splice(index, 1);
+        });
+
+        // 敵AI行動
+        const cfg = cpuSettings[cpuLevel];
+        let emx = 0;
+        if (enemy.x < player.x - 30) emx += enemy.speed;
+        else if (enemy.x > player.x + 30) emx -= enemy.speed;
+        
+        if (player.y < enemy.y - 30 && Math.random() < cfg.buildRate) {
+            handleJump(enemy);
+            if (enemy.buildCooldown <= 0) {
+                const bX = Math.floor(enemy.x / 40) * 40;
+                const bY = Math.floor((enemy.y + 40) / 40) * 40;
+                if (!walls.find(w => w.x === bX && w.y === bY)) {
+                    walls.push({ x: bX, y: bY, w: 40, h: 40, hp: 60, maxHp: 60, type: Math.random() < 0.5 ? 2 : 3 });
+                    enemy.buildCooldown = cpuLevel === 6 ? 6 : 18; 
+                }
+            }
+        }
+        if (enemy.buildCooldown > 0) enemy.buildCooldown--;
+        updateCharacter(enemy, emx);
+
+        enemy.angle = Math.atan2(player.y - enemy.y, player.x - enemy.x);
+        enemy.shootCooldown--;
+        if (enemy.shootCooldown <= 0) {
+            for(let i=-1; i<=1; i++) {
+                enemyBullets.push({
+                    x: enemy.x + enemy.w/2, y: enemy.y + enemy.h/2,
+                    vx: Math.cos(enemy.angle + i*0.1) * (cpuLevel === 6 ? 9 : 7.5), 
+                    vy: Math.sin(enemy.angle + i*0.1) * (cpuLevel === 6 ? 9 : 7.5)
+                });
+            }
+            enemy.shootCooldown = cfg.shootRate + Math.random() * 20;
+        }
+
+        // 【新機能】プレイヤーの弾判定（敵へのヒット、および建築物へのヒット破壊を追加）
+        bullets.forEach((b, bIdx) => {
+            b.x += b.vx; b.y += b.vy;
+            
+            // 敵本体へのヒット
+            if (Math.hypot(enemy.x + enemy.w/2 - b.x, enemy.y + enemy.h/2 - b.y) < 15) {
+                enemy.hp -= 8; bullets.splice(bIdx, 1); updateUI(); return;
+            }
+            
+            // 建築物へのヒット破壊処理
+            walls.forEach((w, wIdx) => {
+                if (b.x > w.x && b.x < w.x + w.w && b.y > w.y && b.y < w.y + w.h) {
+                    w.hp -= 15; // 弾が当たったら建築の耐久値を15削る
+                    bullets.splice(bIdx, 1); // 弾消滅
+                    if (w.hp <= 0) walls.splice(wIdx, 1); // 耐久値が0になったら建築崩壊！
+                }
+            });
+        });
+
+        // 敵の弾判定（床や壁に当たると耐久値が減る）
+        enemyBullets.forEach((eb, ebIdx) => {
+            eb.x += eb.vx; eb.y += eb.vy;
+            if (Math.hypot(player.x + player.w/2 - eb.x, player.y + player.h/2 - eb.y) < 15) {
+                player.hp -= (cpuLevel === 6 ? 8 : 6); 
+                enemyBullets.splice(ebIdx, 1); updateUI(); return;
+            }
+            walls.forEach((w, wIdx) => {
+                if (eb.x > w.x && eb.x < w.x + w.w && eb.y > w.y && eb.y < w.y + w.h) {
+                    w.hp -= 15; enemyBullets.splice(ebIdx, 1);
+                    if (w.hp <= 0) walls.splice(wIdx, 1);
+                }
+            });
+        });
+
+        let targetCameraY = player.y - canvas.height / 2;
+        cameraY = cameraY * 0.9 + targetCameraY * 0.1;
+        if (cameraY < 0) cameraY = 0;
+        if (cameraY > MAP_HEIGHT - canvas.height) cameraY = MAP_HEIGHT - canvas.height;
+    }
+
+    function draw() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+        ctx.save(); ctx.translate(0, -cameraY);
+
+        ctx.strokeStyle = "rgba(255, 255, 255, 0.02)";
+        for(let y=0; y<MAP_HEIGHT; y+=40) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(canvas.width, y); ctx.stroke(); }
+
+        walls.forEach(w => {
+            if (w.type === 1) ctx.fillStyle = "#6e4724"; 
+            else if (w.type === 2) ctx.fillStyle = "#a07855"; 
+            else if (w.type === 3) ctx.fillStyle = "#4a85a8"; 
+            ctx.fillRect(w.x, w.y, w.w, w.h);
+            ctx.strokeStyle = w.type === 1 ? "#ff6666" : w.type === 2 ? "#66ff66" : "#66ccff";
+            ctx.lineWidth = 1; ctx.strokeRect(w.x, w.y, w.w, w.h);
+        });
+
+        ctx.fillStyle = "#ffff00"; bullets.forEach(b => { ctx.beginPath(); ctx.arc(b.x, b.y, 4, 0, Math.PI*2); ctx.fill(); });
+        ctx.fillStyle = "#ff3333"; enemyBullets.forEach(eb => { ctx.beginPath(); ctx.arc(eb.x, eb.y, 4, 0, Math.PI*2); ctx.fill(); });
+
+        particles.forEach(p => {
+            ctx.save(); ctx.globalAlpha = p.alpha; ctx.fillStyle = p.color;
+            ctx.beginPath(); ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2); ctx.fill();
+            ctx.restore();
+        });
+
+        ctx.fillStyle = cpuLevel === 6 ? "#9900ff" : "#ff3366"; 
+        ctx.fillRect(enemy.x, enemy.y, enemy.w, enemy.h);
+        ctx.save(); ctx.translate(enemy.x+enemy.w/2, enemy.y+enemy.h/2); ctx.rotate(enemy.angle);
+        ctx.fillStyle = "#333"; ctx.fillRect(0, -3, 18, 6); ctx.restore();
+
+        ctx.fillStyle = "#00ffcc"; ctx.fillRect(player.x, player.y, player.w, player.h);
+        ctx.save(); ctx.translate(player.x+player.w/2, player.y+player.h/2); ctx.rotate(player.angle);
+        ctx.fillStyle = "#fff"; ctx.fillRect(0, -3, 18, 6); ctx.restore();
+
+        ctx.restore(); 
+
+        if (!gameActive && (player.hp <= 0 || enemy.hp <= 0)) {
+            ctx.fillStyle = "rgba(0, 0, 0, 0.82)"; ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.font = "bold 38px sans-serif"; ctx.textAlign = "center";
+            if (enemy.hp <= 0) { ctx.fillStyle = "#ffff00"; ctx.fillText("🏆 VICTORY ROYALE 🏆", canvas.width / 2, canvas.height / 2 - 30); }
+            else { ctx.fillStyle = "#ff3366"; ctx.fillText("#2 GAME OVER", canvas.width / 2, canvas.height / 2 - 30); }
+            
+            ctx.fillStyle = "#fff"; ctx.font = "bold 20px sans-serif";
+            ctx.fillText("【スペースキー】を押してステージ選択画面へ", canvas.width / 2, canvas.height / 2 + 40);
+        }
+    }
+
+    let stageTimer = 0;
+    function loop() { update(); draw(); requestAnimationFrame(loop); }
+    initStageByLevel(1);
+    loop();
+</script>
+</body>
+</html>
